@@ -11,17 +11,24 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/marcuoli/go-xlsx-report/cell"
 	"github.com/marcuoli/go-xlsx-report/table"
 )
 
 type textItem = stringItem
 
 // Validate checks ZIP integrity, part identities, sheet order, exact row coverage
-// and every saved literal value. It rejects formulas and external relationships.
+// and every saved literal value/type, including declared numeric cells. It rejects
+// formulas and external relationships; undeclared cells retain exact text semantics.
 // Fixed file/expanded/entry limits bound verification before atomic publication.
 func Validate(ctx context.Context, path string, expected []table.Sheet) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	for _, sheet := range expected {
+		if err := table.Validate(sheet); err != nil {
+			return err
+		}
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxWorkbookSize {
@@ -212,6 +219,13 @@ func Validate(ctx context.Context, path string, expected []table.Sheet) error {
 				if _, duplicate := actual[saved.Axis]; duplicate {
 					return errors.New("saved cell is duplicated")
 				}
+				if number, declared := sheet.NumericCells[saved.Axis]; declared {
+					if saved.Kind != "" && saved.Kind != "n" || !saved.hasValue || saved.hasInline || !cell.EqualNumber(saved.Value, number) {
+						return errors.New("saved numeric type or value differs")
+					}
+					actual[saved.Axis] = number
+					continue
+				}
 				value := ""
 				switch saved.Kind {
 				case "s":
@@ -244,6 +258,9 @@ func Validate(ctx context.Context, path string, expected []table.Sheet) error {
 			for c, want := range rows[r] {
 				axis, _ := table.Axis(c+1, r+1)
 				got, exists := actual[axis]
+				if number, declared := sheet.NumericCells[axis]; declared {
+					want = number
+				}
 				if got != want || !exists && want != "" {
 					return fmt.Errorf("saved literal value differs at %s!%s", sheet.Name, axis)
 				}

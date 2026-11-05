@@ -155,3 +155,34 @@ func TestInlineStringCannotHideValueChild(t *testing.T) {
 		t.Fatal("inline string with incompatible value accepted")
 	}
 }
+
+func TestDeclaredNumericTypeAndExactValueValidation(t *testing.T) {
+	sheets := []table.Sheet{{Name: "Values", Headers: []string{"Amount", "Identity"}, Rows: [][]string{{"1.25 GB", "00123"}}, NumericCells: map[string]string{"A2": "1.25"}}}
+	for _, test := range []struct {
+		name, old, new string
+		valid          bool
+	}{
+		{"intact", "", "", true}, {"equivalent exponent", `<v>1.25</v>`, `<v>125e-2</v>`, true},
+		{"value changed", `<v>1.25</v>`, `<v>1.26</v>`, false}, {"number became text", `<c r="A2" t="n"><v>1.25</v></c>`, `<c r="A2" t="inlineStr"><is><t>1.25</t></is></c>`, false},
+		{"formula", `<v>1.25</v>`, `<f>1+0.25</f><v>1.25</v>`, false}, {"missing payload", `<v>1.25</v>`, ``, false},
+		{"nested formula", `<v>1.25</v>`, `<v>1.25<f>1+1</f></v>`, false},
+		{"nested value", `<v>1.25</v>`, `<v>1.25<v>999</v></v>`, false},
+		{"foreign child", `<v>1.25</v>`, `<v>1.25<child xmlns="urn:other">999</child></v>`, false},
+
+		{"boolean type", `r="A2" t="n"`, `r="A2" t="b"`, false}, {"precision corruption", `<v>1.25</v>`, `<v>1.250000000000001</v>`, false},
+		{"identity numeric coercion", `<c r="B2" t="inlineStr"><is><t xml:space="preserve">00123</t></is></c>`, `<c r="B2" t="n"><v>123</v></c>`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parts := testbook.Parts(sheets)
+			if test.old != "" {
+				parts["xl/worksheets/sheet1.xml"] = strings.Replace(parts["xl/worksheets/sheet1.xml"], test.old, test.new, 1)
+			}
+			path := filepath.Join(t.TempDir(), "numbers.xlsx")
+			testbook.Write(t, path, parts)
+			err := validation.Validate(context.Background(), path, sheets)
+			if (err == nil) != test.valid {
+				t.Fatalf("valid=%v error=%v", test.valid, err)
+			}
+		})
+	}
+}

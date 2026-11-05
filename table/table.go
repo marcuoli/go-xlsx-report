@@ -28,9 +28,13 @@ type Backend interface {
 // Sheet is a complete table snapshot. Rows and headers remain caller-owned and
 // must not change while rendering or validating the saved package.
 type Sheet struct {
-	Name                                  string
-	Headers                               []string
-	Rows                                  [][]string
+	Name    string
+	Headers []string
+	Rows    [][]string
+	// NumericCells opts body coordinates into native numbers. Values are numeric
+	// payloads; the corresponding nonempty Rows text remains a layout/display hint.
+	// Headers and all undeclared cells stay literal text. The map remains caller-owned.
+	NumericCells                          map[string]string
 	Widths                                []float64
 	RowStyles                             []int
 	HeaderStyle, BodyStyle, FreezeColumns int
@@ -75,6 +79,7 @@ func Validate(sheet Sheet) error {
 	}
 	rows := [][]string{sheet.Headers}
 	rows = append(rows, sheet.Rows...)
+	numericLocations := 0
 	for r, row := range rows {
 		if len(row) != len(sheet.Headers) {
 			return errors.New("row width differs from header")
@@ -84,7 +89,19 @@ func Validate(sheet Sheet) error {
 			if err := cell.CheckText(sheet.Name, axis, value); err != nil {
 				return err
 			}
+			if number, declared := sheet.NumericCells[axis]; declared {
+				if r == 0 || value == "" {
+					return errors.New("numeric declaration must identify a nonempty body cell")
+				}
+				if _, ok := cell.Number(number); !ok {
+					return fmt.Errorf("%w: numeric declaration", cell.ErrInvalidNumber)
+				}
+				numericLocations++
+			}
 		}
+	}
+	if numericLocations != len(sheet.NumericCells) {
+		return errors.New("numeric declaration is outside table body")
 	}
 	return nil
 }
@@ -98,7 +115,7 @@ func backendOperation(ctx context.Context, operation func() error) error {
 	return errors.Join(operation(), ctx.Err())
 }
 
-// Render writes literal values and bounded dimensions, preserving exact strings.
+// Render writes literal text and explicitly declared numbers with bounded dimensions.
 // A failure aborts the caller's staged publication; no partial table is accepted.
 func Render(ctx context.Context, backend Backend, sheet Sheet) error {
 	if err := ctx.Err(); err != nil {
@@ -106,6 +123,10 @@ func Render(ctx context.Context, backend Backend, sheet Sheet) error {
 	}
 	if err := Validate(sheet); err != nil {
 		return err
+	}
+	numberWriter, numberSupport := backend.(cell.NumberWriter)
+	if len(sheet.NumericCells) > 0 && !numberSupport {
+		return errors.New("backend does not support declared numeric cells")
 	}
 	if err := backendOperation(ctx, func() error { _, err := backend.NewSheet(sheet.Name); return err }); err != nil {
 		return err
@@ -119,7 +140,12 @@ func Render(ctx context.Context, backend Backend, sheet Sheet) error {
 	for r, row := range rows {
 		for c, value := range row {
 			axis, _ := Axis(c+1, r+1)
-			if err := backendOperation(ctx, func() error { return cell.SetText(backend, sheet.Name, axis, value) }); err != nil {
+			if err := backendOperation(ctx, func() error {
+				if number, declared := sheet.NumericCells[axis]; declared {
+					return cell.SetNumber(numberWriter, sheet.Name, axis, number)
+				}
+				return cell.SetText(backend, sheet.Name, axis, value)
+			}); err != nil {
 				return err
 			}
 			widths[c] = min(64, max(widths[c], float64(layout.LongestLine(value)+2)))

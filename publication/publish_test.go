@@ -68,3 +68,25 @@ func TestFailedOrCancelledSaveNeverInstalls(t *testing.T) {
 		}
 	}
 }
+
+func TestNestedNumericContentCannotReplaceInstalledWorkbook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "numbers.xlsx")
+	sheets := []table.Sheet{{Name: "Values", Headers: []string{"Number"}, Rows: [][]string{{"1.25"}}, NumericCells: map[string]string{"A2": "1.25"}}}
+	parts := testbook.Parts(sheets)
+	save := func(file *os.File) error { return testbook.WriteTo(file, parts) }
+	if installed, err := publication.Publish(context.Background(), path, false, save, sheets); !installed || err != nil {
+		t.Fatal(installed, err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts["xl/worksheets/sheet1.xml"] = strings.Replace(parts["xl/worksheets/sheet1.xml"], `<v>1.25</v>`, `<v>1.25<f>1+1</f></v>`, 1)
+	if installed, err := publication.Publish(context.Background(), path, true, save, sheets); installed || err == nil {
+		t.Fatal("nested numeric content installed")
+	}
+	retained, err := os.ReadFile(path)
+	if err != nil || string(retained) != string(original) {
+		t.Fatal("failed numeric validation changed installed workbook")
+	}
+}

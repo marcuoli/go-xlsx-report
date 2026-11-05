@@ -86,3 +86,56 @@ func TestCancellationDuringOnlyCellDoesNotReportSuccess(t *testing.T) {
 		t.Fatalf("late cancellation: %v writes=%d", err, len(b.Values))
 	}
 }
+
+type numericBackend struct {
+	*backend
+	Numbers       map[string]string
+	NumberFailure error
+	NumberCancel  context.CancelFunc
+}
+
+func (b *numericBackend) SetCellNumber(_ string, axis, value string) error {
+	if b.NumberFailure != nil {
+		return b.NumberFailure
+	}
+	if b.Numbers == nil {
+		b.Numbers = map[string]string{}
+	}
+	b.Numbers[axis] = value
+	if b.NumberCancel != nil {
+		b.NumberCancel()
+	}
+	return nil
+}
+func TestOptInNumbersPreserveTextAndBackendCompatibility(t *testing.T) {
+	sheet := table.Sheet{Name: "Values", Headers: []string{"Measurement", "Identity"}, Rows: [][]string{{".747 GB", "00123"}}, NumericCells: map[string]string{"A2": ".747"}}
+	old := &backend{}
+	if err := table.Render(context.Background(), old, sheet); err == nil || old.Created != 0 {
+		t.Fatal("unsupported numeric backend mutated output")
+	}
+	b := &numericBackend{backend: &backend{}}
+	if err := table.Render(context.Background(), b, sheet); err != nil {
+		t.Fatal(err)
+	}
+	if b.Numbers["A2"] != "0.747" || b.Values["B2"] != "00123" || len(b.Numbers) != 1 {
+		t.Fatal("typed dispatch changed")
+	}
+	for _, test := range []struct{ name, axis, value string }{{"header", "A1", "1"}, {"outside", "C2", "1"}, {"invalid axis", "a2", "1"}, {"precision", "A2", "9007199254740993"}} {
+		t.Run(test.name, func(t *testing.T) {
+			bad := sheet
+			bad.NumericCells = map[string]string{test.axis: test.value}
+			if err := table.Validate(bad); err == nil {
+				t.Fatal("invalid numeric declaration admitted")
+			}
+		})
+	}
+	failure := errors.New("numeric writer failed")
+	if err := table.Render(context.Background(), &numericBackend{backend: &backend{}, NumberFailure: failure}, sheet); !errors.Is(err, failure) {
+		t.Fatal("numeric error hidden")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := table.Render(ctx, &numericBackend{backend: &backend{}, NumberCancel: cancel}, sheet); !errors.Is(err, context.Canceled) {
+		t.Fatal("numeric cancellation hidden")
+	}
+}

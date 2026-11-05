@@ -17,7 +17,17 @@ func requireName(start xml.StartElement, local string) error {
 	return nil
 }
 func simpleText(decoder *xml.Decoder, start xml.StartElement) (string, error) {
-	if err := requireName(start, "t"); err != nil {
+	text, err := leafText(decoder, start, "t", 7*32767)
+	if err != nil {
+		return "", err
+	}
+	return decodeSpreadsheetMLText(text)
+}
+
+// leafText rejects nested XML instead of DecodeElement's silent child skipping.
+// This keeps formulas/foreign elements out of numeric payloads and text leaves.
+func leafText(decoder *xml.Decoder, start xml.StartElement, local string, limit int) (string, error) {
+	if err := requireName(start, local); err != nil {
 		return "", err
 	}
 	var text strings.Builder
@@ -29,14 +39,14 @@ func simpleText(decoder *xml.Decoder, start xml.StartElement) (string, error) {
 		switch token := token.(type) {
 		case xml.CharData:
 			text.Write(token)
-			if text.Len() > 7*32767 {
+			if text.Len() > limit {
 				return "", errors.New("saved text exceeds cell capacity")
 			}
 		case xml.EndElement:
 			if token.Name != start.Name {
 				return "", errors.New("malformed text element")
 			}
-			return decodeSpreadsheetMLText(text.String())
+			return text.String(), nil
 		case xml.Comment:
 		default:
 			return "", errors.New("saved literal text contains nested content")
@@ -195,9 +205,11 @@ func (cell *savedCell) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement
 					return errors.New("saved cell repeats its value")
 				}
 				cell.hasValue = true
-				if err := decoder.DecodeElement(&cell.Value, &token); err != nil {
+				value, err := leafText(decoder, token, "v", 512)
+				if err != nil {
 					return err
 				}
+				cell.Value = value
 			case "is":
 				if cell.hasValue || cell.hasInline {
 					return errors.New("saved cell repeats its value")

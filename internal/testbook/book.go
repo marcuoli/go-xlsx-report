@@ -40,7 +40,11 @@ func Parts(sheets []table.Sheet) map[string]string {
 			fmt.Fprintf(&body, `<row r="%d">`, r+1)
 			for c, value := range row {
 				axis, _ := table.Axis(c+1, r+1)
-				fmt.Fprintf(&body, `<c r="%s" t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>`, axis, escaped(value))
+				if number, ok := sheet.NumericCells[axis]; ok {
+					fmt.Fprintf(&body, `<c r="%s" t="n"><v>%s</v></c>`, axis, escaped(number))
+				} else {
+					fmt.Fprintf(&body, `<c r="%s" t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>`, axis, escaped(value))
+				}
 			}
 			body.WriteString(`</row>`)
 		}
